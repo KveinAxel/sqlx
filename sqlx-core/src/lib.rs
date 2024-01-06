@@ -77,6 +77,7 @@ pub mod query_scalar;
 pub mod row;
 pub mod rt;
 pub mod sync;
+pub mod type_checking;
 pub mod type_info;
 pub mod value;
 
