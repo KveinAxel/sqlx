@@ -94,4 +94,4 @@ dotenvy = "0.15"
 
 [dev-dependencies]
 sqlx = { workspace = true, features = ["postgres", "sqlite", "mysql", "migrate", "macros"] }
-tokio = { version = "1", features = ["rt"] }
+tokio = { version = "0.2", package = "madsim-tokio", features = ["full"] }
