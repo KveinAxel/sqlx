@@ -3272,7 +3272,6 @@ dependencies = [
  "sqlx",
  "thiserror",
  "time",
- "tokio",
  "tokio-stream",
  "tracing",
  "url",
@@ -3414,6 +3413,7 @@ dependencies = [
  "either",
  "heck 0.4.0",
  "hex",
+ "madsim-tokio",
  "once_cell",
  "proc-macro2",
  "quote",
@@ -3426,7 +3426,6 @@ dependencies = [
  "sqlx-sqlite",
  "syn 1.0.107",
  "tempfile",
- "tokio",
  "url",
 ]
 

@@ -13,3 +13,5 @@ target/
 # Shared-memory and WAL files created by SQLite.
 *-shm
 *-wal
+
+*.log
