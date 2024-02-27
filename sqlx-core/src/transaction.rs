@@ -248,7 +248,7 @@ pub fn begin_ansi_transaction_sql(depth: usize) -> Cow<'static, str> {
     }
 }
 
-pub fn commit_ansi_transaction_sql(depth: usize) -> Cow<'static, str> {
+pub async fn commit_ansi_transaction_sql(depth: usize) -> Cow<'static, str> {
     if depth == 1 {
         Cow::Borrowed("COMMIT")
     } else {
@@ -256,7 +256,7 @@ pub fn commit_ansi_transaction_sql(depth: usize) -> Cow<'static, str> {
     }
 }
 
-pub fn rollback_ansi_transaction_sql(depth: usize) -> Cow<'static, str> {
+pub async fn rollback_ansi_transaction_sql(depth: usize) -> Cow<'static, str> {
     if depth == 1 {
         Cow::Borrowed("ROLLBACK")
     } else {

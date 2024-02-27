@@ -22,9 +22,9 @@ use crate::{Sqlite, SqliteArguments, SqliteQueryResult, SqliteRow, SqliteStateme
 
 // Each SQLite connection has a dedicated thread.
 
-// TODO: Tweak this so that we can use a thread pool per pool of SQLite3 connections to reduce
-//       OS resource usage. Low priority because a high concurrent load for SQLite3 is very
-//       unlikely.
+// TODO: Tweak this so that we can use a thread pool per pool of SQLite3
+// connections to reduce       OS resource usage. Low priority because a high
+// concurrent load for SQLite3 is very       unlikely.
 
 pub(crate) struct ConnectionWorker {
     command_tx: flume::Sender<Command>,
@@ -79,67 +79,54 @@ impl ConnectionWorker {
     pub(crate) async fn establish(params: EstablishParams) -> Result<Self, Error> {
         let (establish_tx, establish_rx) = oneshot::channel();
 
-        thread::Builder::new()
-            .name(params.thread_name.clone())
-            .spawn(move || {
-                let (command_tx, command_rx) = flume::bounded(params.command_channel_size);
+        let ret = tokio::spawn(async move {
+            let (command_tx, command_rx) = flume::bounded(params.command_channel_size);
 
-                let conn = match params.establish() {
-                    Ok(conn) => conn,
-                    Err(e) => {
-                        establish_tx.send(Err(e)).ok();
-                        return;
-                    }
-                };
-
-                let shared = Arc::new(WorkerSharedState {
-                    cached_statements_size: AtomicUsize::new(0),
-                    // note: must be fair because in `Command::UnlockDb` we unlock the mutex
-                    // and then immediately try to relock it; an unfair mutex would immediately
-                    // grant us the lock even if another task is waiting.
-                    conn: Mutex::new(conn, true),
-                });
-                let mut conn = shared.conn.try_lock().unwrap();
-
-                if establish_tx
-                    .send(Ok(Self {
-                        command_tx,
-                        _handle_raw: conn.handle.to_raw(),
-                        shared: Arc::clone(&shared),
-                    }))
-                    .is_err()
-                {
+            let conn = match params.establish().await {
+                Ok(conn) => conn,
+                Err(e) => {
+                    establish_tx.send(Err(e)).ok();
                     return;
                 }
+            };
 
-                // If COMMIT or ROLLBACK is processed but not acknowledged, there would be another
-                // ROLLBACK sent when the `Transaction` drops. We need to ignore it otherwise we
-                // would rollback an already completed transaction.
-                let mut ignore_next_start_rollback = false;
+            let shared = Arc::new(WorkerSharedState {
+                cached_statements_size: AtomicUsize::new(0),
+                // note: must be fair because in `Command::UnlockDb` we unlock the mutex
+                // and then immediately try to relock it; an unfair mutex would immediately
+                // grant us the lock even if another task is waiting.
+                conn: Mutex::new(conn, true),
+            });
+            let mut conn = shared.conn.try_lock().unwrap();
 
-                for cmd in command_rx {
-                    match cmd {
-                        Command::Prepare { query, tx } => {
-                            tx.send(prepare(&mut conn, &query).map(|prepared| {
-                                update_cached_statements_size(
-                                    &conn,
-                                    &shared.cached_statements_size,
-                                );
-                                prepared
-                            }))
-                            .ok();
-                        }
-                        Command::Describe { query, tx } => {
-                            tx.send(describe(&mut conn, &query)).ok();
-                        }
-                        Command::Execute {
-                            query,
-                            arguments,
-                            persistent,
-                            tx,
-                        } => {
-                            let iter = match execute::iter(&mut conn, &query, arguments, persistent)
-                            {
+            // If COMMIT or ROLLBACK is processed but not acknowledged, there would be
+            // another ROLLBACK sent when the `Transaction` drops. We need to
+            // ignore it otherwise we would rollback an already completed
+            // transaction.
+            let mut ignore_next_start_rollback = false;
+
+            while let Ok((cmd, span)) = command_rx.recv_async().await {
+                let _guard = span.enter();
+                match cmd {
+                    Command::Prepare { query, tx } => {
+                        tx.send(prepare(&mut conn, &query).await.map(|prepared| {
+                            update_cached_statements_size(&conn, &shared.cached_statements_size)
+                                .await;
+                            prepared
+                        }))
+                        .ok();
+                    }
+                    Command::Describe { query, tx } => {
+                        tx.send(describe(&mut conn, &query).await).ok();
+                    }
+                    Command::Execute {
+                        query,
+                        arguments,
+                        persistent,
+                        tx,
+                    } => {
+                        let iter =
+                            match execute::iter(&mut conn, &query, arguments, persistent).await {
                                 Ok(iter) => iter,
                                 Err(e) => {
                                     tx.send(Err(e)).ok();
@@ -147,118 +134,121 @@ impl ConnectionWorker {
                                 }
                             };
 
-                            for res in iter {
-                                if tx.send(res).is_err() {
-                                    break;
-                                }
-                            }
-
-                            update_cached_statements_size(&conn, &shared.cached_statements_size);
-                        }
-                        Command::Begin { tx } => {
-                            let depth = conn.transaction_depth;
-                            let res =
-                                conn.handle
-                                    .exec(begin_ansi_transaction_sql(depth))
-                                    .map(|_| {
-                                        conn.transaction_depth += 1;
-                                    });
-                            let res_ok = res.is_ok();
-
-                            if tx.blocking_send(res).is_err() && res_ok {
-                                // The BEGIN was processed but not acknowledged. This means no
-                                // `Transaction` was created and so there is no way to commit /
-                                // rollback this transaction. We need to roll it back
-                                // immediately otherwise it would remain started forever.
-                                if let Err(error) = conn
-                                    .handle
-                                    .exec(rollback_ansi_transaction_sql(depth + 1))
-                                    .map(|_| {
-                                        conn.transaction_depth -= 1;
-                                    })
-                                {
-                                    // The rollback failed. To prevent leaving the connection
-                                    // in an inconsistent state we shutdown this worker which
-                                    // causes any subsequent operation on the connection to fail.
-                                    tracing::error!(%error, "failed to rollback cancelled transaction");
-                                    break;
-                                }
+                        for res in iter {
+                            if tx.send_async(res).await.is_err() {
+                                break;
                             }
                         }
-                        Command::Commit { tx } => {
-                            let depth = conn.transaction_depth;
 
-                            let res = if depth > 0 {
-                                conn.handle
-                                    .exec(commit_ansi_transaction_sql(depth))
-                                    .map(|_| {
-                                        conn.transaction_depth -= 1;
-                                    })
-                            } else {
-                                Ok(())
-                            };
-                            let res_ok = res.is_ok();
+                        update_cached_statements_size(&conn, &shared.cached_statements_size).await;
+                    }
+                    Command::Begin { tx } => {
+                        let depth = conn.transaction_depth;
+                        let res = conn
+                            .handle
+                            .exec(begin_ansi_transaction_sql(depth))
+                            .await
+                            .map(|_| {
+                                conn.transaction_depth += 1;
+                            });
+                        let res_ok = res.is_ok();
 
-                            if tx.blocking_send(res).is_err() && res_ok {
-                                // The COMMIT was processed but not acknowledged. This means that
-                                // the `Transaction` doesn't know it was committed and will try to
-                                // rollback on drop. We need to ignore that rollback.
+                        if tx.send(res).await.is_err() && res_ok {
+                            // The BEGIN was processed but not acknowledged. This means no
+                            // `Transaction` was created and so there is no way to commit /
+                            // rollback this transaction. We need to roll it back
+                            // immediately otherwise it would remain started forever.
+                            if let Err(error) = conn
+                                .handle
+                                .exec(rollback_ansi_transaction_sql(depth + 1).await)
+                                .map(|_| {
+                                    conn.transaction_depth -= 1;
+                                })
+                            {
+                                // The rollback failed. To prevent leaving the connection
+                                // in an inconsistent state we shutdown this worker which
+                                // causes any subsequent operation on the connection to fail.
+                                tracing::error!(%error, "failed to rollback cancelled transaction");
+                                break;
+                            }
+                        }
+                    }
+                    Command::Commit { tx } => {
+                        let depth = conn.transaction_depth;
+
+                        let res = if depth > 0 {
+                            conn.handle
+                                .exec(commit_ansi_transaction_sql(depth).await)
+                                .await
+                                .map(|_| {
+                                    conn.transaction_depth -= 1;
+                                })
+                        } else {
+                            Ok(())
+                        };
+                        let res_ok = res.is_ok();
+
+                        if tx.send(res).await.is_err() && res_ok {
+                            // The COMMIT was processed but not acknowledged. This means that
+                            // the `Transaction` doesn't know it was committed and will try to
+                            // rollback on drop. We need to ignore that rollback.
+                            ignore_next_start_rollback = true;
+                        }
+                    }
+                    Command::Rollback { tx } => {
+                        if ignore_next_start_rollback && tx.is_none() {
+                            ignore_next_start_rollback = false;
+                            continue;
+                        }
+
+                        let depth = conn.transaction_depth;
+
+                        let res = if depth > 0 {
+                            conn.handle
+                                .exec(rollback_ansi_transaction_sql(depth).await)
+                                .await
+                                .map(|_| {
+                                    conn.transaction_depth -= 1;
+                                })
+                        } else {
+                            Ok(())
+                        };
+
+                        let res_ok = res.is_ok();
+
+                        if let Some(tx) = tx {
+                            if tx.send(res).await.is_err() && res_ok {
+                                // The ROLLBACK was processed but not acknowledged. This means
+                                // that the `Transaction` doesn't know it was rolled back and
+                                // will try to rollback again on drop. We need to ignore that
+                                // rollback.
                                 ignore_next_start_rollback = true;
                             }
                         }
-                        Command::Rollback { tx } => {
-                            if ignore_next_start_rollback && tx.is_none() {
-                                ignore_next_start_rollback = false;
-                                continue;
-                            }
-
-                            let depth = conn.transaction_depth;
-
-                            let res = if depth > 0 {
-                                conn.handle
-                                    .exec(rollback_ansi_transaction_sql(depth))
-                                    .map(|_| {
-                                        conn.transaction_depth -= 1;
-                                    })
-                            } else {
-                                Ok(())
-                            };
-
-                            let res_ok = res.is_ok();
-
-                            if let Some(tx) = tx {
-                                if tx.blocking_send(res).is_err() && res_ok {
-                                    // The ROLLBACK was processed but not acknowledged. This means
-                                    // that the `Transaction` doesn't know it was rolled back and
-                                    // will try to rollback again on drop. We need to ignore that
-                                    // rollback.
-                                    ignore_next_start_rollback = true;
-                                }
-                            }
-                        }
-                        Command::ClearCache { tx } => {
-                            conn.statements.clear();
-                            update_cached_statements_size(&conn, &shared.cached_statements_size);
-                            tx.send(()).ok();
-                        }
-                        Command::UnlockDb => {
-                            drop(conn);
-                            conn = futures_executor::block_on(shared.conn.lock());
-                        }
-                        Command::Ping { tx } => {
-                            tx.send(()).ok();
-                        }
-                        Command::Shutdown { tx } => {
-                            // drop the connection references before sending confirmation
-                            // and ending the command loop
-                            drop(conn);
-                            drop(shared);
-                            let _ = tx.send(());
-                            return;
-                        }
+                    }
+                    Command::ClearCache { tx } => {
+                        conn.statements.clear();
+                        update_cached_statements_size(&conn, &shared.cached_statements_size);
+                        tx.send(()).ok();
+                    }
+                    Command::UnlockDb => {
+                        drop(conn);
+                        conn = shared.conn.lock().await;
+                    }
+                    Command::Ping { tx } => {
+                        tx.send(()).ok();
+                    }
+                    Command::Shutdown { tx } => {
+                        // drop the connection references before sending confirmation
+                        // and ending the command loop
+                        drop(conn);
+                        drop(shared);
+                        let _ = tx.send(());
+                        return;
                     }
                 }
-            })?;
+            }
+        });
 
         establish_rx.await.map_err(|_| Error::WorkerCrashed)?
     }
@@ -373,7 +363,8 @@ impl ConnectionWorker {
 
     /// Send a command to the worker to shut down the processing thread.
     ///
-    /// A `WorkerCrashed` error may be returned if the thread has already stopped.
+    /// A `WorkerCrashed` error may be returned if the thread has already
+    /// stopped.
     pub(crate) fn shutdown(&mut self) -> impl Future<Output = Result<(), Error>> {
         let (tx, rx) = oneshot::channel();
 
@@ -391,15 +382,18 @@ impl ConnectionWorker {
     }
 }
 
-fn prepare(conn: &mut ConnectionState, query: &str) -> Result<SqliteStatement<'static>, Error> {
+async fn prepare(
+    conn: &mut ConnectionState,
+    query: &str,
+) -> Result<SqliteStatement<'static>, Error> {
     // prepare statement object (or checkout from cache)
-    let statement = conn.statements.get(query, true)?;
+    let statement = conn.statements.get(query, true).await?;
 
     let mut parameters = 0;
     let mut columns = None;
     let mut column_names = None;
 
-    while let Some(statement) = statement.prepare_next(&mut conn.handle)? {
+    while let Some(statement) = statement.prepare_next(&mut conn.handle).await? {
         parameters += statement.handle.bind_parameter_count();
 
         // the first non-empty statement is chosen as the statement we pull columns from
@@ -417,11 +411,12 @@ fn prepare(conn: &mut ConnectionState, query: &str) -> Result<SqliteStatement<'s
     })
 }
 
-fn update_cached_statements_size(conn: &ConnectionState, size: &AtomicUsize) {
+async fn update_cached_statements_size(conn: &ConnectionState, size: &AtomicUsize) {
     size.store(conn.statements.len(), Ordering::Release);
 }
 
-// A oneshot channel where send completes only after the receiver receives the value.
+// A oneshot channel where send completes only after the receiver receives the
+// value.
 mod rendezvous_oneshot {
     use super::oneshot::{self, Canceled};
 

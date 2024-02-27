@@ -424,7 +424,8 @@ impl BranchList {
 }
 
 // Opcode Reference: https://sqlite.org/opcode.html
-pub(super) fn explain(
+// TODO: async
+pub(super) async fn explain(
     conn: &mut ConnectionState,
     query: &str,
 ) -> Result<(Vec<SqliteTypeInfo>, Vec<Option<bool>>), Error> {
