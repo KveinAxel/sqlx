@@ -19,7 +19,7 @@ pub(crate) async fn describe(conn: &mut ConnectionState, query: &str) -> Result<
     let mut num_params = 0;
 
     // we start by finding the first statement that *can* return results
-    while let Some(stmt) = statement.prepare_next(&mut conn.handle).await? {
+    while let Some(stmt) = statement.prepare_next(&mut conn.handle)? {
         num_params += stmt.handle.bind_parameter_count();
 
         let mut stepped = false;

@@ -147,7 +147,7 @@ version = "1"
 # version = "0.2"
 package = "madsim-tokio"
 path = "../madsim/madsim-tokio"
-features = ["time", "net", "sync", "fs", "io-util", "rt"]
+features = ["time", "net", "sync", "fs", "io-util", "rt", "macros"]
 default-features = false
 
 [dependencies]

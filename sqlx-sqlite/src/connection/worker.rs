@@ -79,7 +79,7 @@ impl ConnectionWorker {
     pub(crate) async fn establish(params: EstablishParams) -> Result<Self, Error> {
         let (establish_tx, establish_rx) = oneshot::channel();
 
-        let ret = tokio::spawn(async move {
+        tokio::spawn(async move {
             let (command_tx, command_rx) = flume::bounded(params.command_channel_size);
 
             let conn = match params.establish().await {
@@ -99,19 +99,28 @@ impl ConnectionWorker {
             });
             let mut conn = shared.conn.try_lock().unwrap();
 
+            if establish_tx
+                .send(Ok(Self {
+                    command_tx,
+                    _handle_raw: conn.handle.to_raw(),
+                    shared: Arc::clone(&shared),
+                }))
+                .is_err()
+            {
+                return;
+            }
+
             // If COMMIT or ROLLBACK is processed but not acknowledged, there would be
             // another ROLLBACK sent when the `Transaction` drops. We need to
             // ignore it otherwise we would rollback an already completed
             // transaction.
             let mut ignore_next_start_rollback = false;
 
-            while let Ok((cmd, span)) = command_rx.recv_async().await {
-                let _guard = span.enter();
+            while let Ok(cmd) = command_rx.recv_async().await {
                 match cmd {
                     Command::Prepare { query, tx } => {
                         tx.send(prepare(&mut conn, &query).await.map(|prepared| {
-                            update_cached_statements_size(&conn, &shared.cached_statements_size)
-                                .await;
+                            update_cached_statements_size(&conn, &shared.cached_statements_size);
                             prepared
                         }))
                         .ok();
@@ -125,22 +134,21 @@ impl ConnectionWorker {
                         persistent,
                         tx,
                     } => {
-                        let iter =
-                            match execute::iter(&mut conn, &query, arguments, persistent).await {
-                                Ok(iter) => iter,
-                                Err(e) => {
-                                    tx.send(Err(e)).ok();
-                                    continue;
-                                }
-                            };
+                        let iter = match execute::iter(&mut conn, &query, arguments, persistent).await {
+                            Ok(iter) => iter,
+                            Err(e) => {
+                                tx.send(Err(e)).ok();
+                                continue;
+                            }
+                        };
 
                         for res in iter {
-                            if tx.send_async(res).await.is_err() {
+                            if tx.send(res).is_err() {
                                 break;
                             }
                         }
 
-                        update_cached_statements_size(&conn, &shared.cached_statements_size).await;
+                        update_cached_statements_size(&conn, &shared.cached_statements_size);
                     }
                     Command::Begin { tx } => {
                         let depth = conn.transaction_depth;
@@ -160,7 +168,8 @@ impl ConnectionWorker {
                             // immediately otherwise it would remain started forever.
                             if let Err(error) = conn
                                 .handle
-                                .exec(rollback_ansi_transaction_sql(depth + 1).await)
+                                .exec(rollback_ansi_transaction_sql(depth + 1))
+                                .await
                                 .map(|_| {
                                     conn.transaction_depth -= 1;
                                 })
@@ -178,8 +187,7 @@ impl ConnectionWorker {
 
                         let res = if depth > 0 {
                             conn.handle
-                                .exec(commit_ansi_transaction_sql(depth).await)
-                                .await
+                                .exec(commit_ansi_transaction_sql(depth)).await
                                 .map(|_| {
                                     conn.transaction_depth -= 1;
                                 })
@@ -205,8 +213,7 @@ impl ConnectionWorker {
 
                         let res = if depth > 0 {
                             conn.handle
-                                .exec(rollback_ansi_transaction_sql(depth).await)
-                                .await
+                                .exec(rollback_ansi_transaction_sql(depth)).await
                                 .map(|_| {
                                     conn.transaction_depth -= 1;
                                 })
@@ -233,7 +240,7 @@ impl ConnectionWorker {
                     }
                     Command::UnlockDb => {
                         drop(conn);
-                        conn = shared.conn.lock().await;
+                        conn = futures_executor::block_on(shared.conn.lock());
                     }
                     Command::Ping { tx } => {
                         tx.send(()).ok();
@@ -393,7 +400,7 @@ async fn prepare(
     let mut columns = None;
     let mut column_names = None;
 
-    while let Some(statement) = statement.prepare_next(&mut conn.handle).await? {
+    while let Some(statement) = statement.prepare_next(&mut conn.handle)? {
         parameters += statement.handle.bind_parameter_count();
 
         // the first non-empty statement is chosen as the statement we pull columns from
@@ -411,7 +418,7 @@ async fn prepare(
     })
 }
 
-async fn update_cached_statements_size(conn: &ConnectionState, size: &AtomicUsize) {
+fn update_cached_statements_size(conn: &ConnectionState, size: &AtomicUsize) {
     size.store(conn.statements.len(), Ordering::Release);
 }
 

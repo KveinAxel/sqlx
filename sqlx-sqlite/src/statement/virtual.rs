@@ -73,7 +73,7 @@ impl VirtualStatement {
         })
     }
 
-    pub(crate) async fn prepare_next(
+    pub(crate) fn prepare_next(
         &mut self,
         conn: &mut ConnectionHandle,
     ) -> Result<Option<PreparedStatement<'_>>, Error> {
@@ -88,7 +88,7 @@ impl VirtualStatement {
                 return Ok(None);
             }
 
-            if let Some(statement) = prepare(conn.as_ptr(), &mut self.tail, self.persistent).await? {
+            if let Some(statement) = prepare(conn.as_ptr(), &mut self.tail, self.persistent)? {
                 let num = statement.column_count();
 
                 let mut columns = Vec::with_capacity(num);
@@ -140,7 +140,7 @@ impl VirtualStatement {
     }
 }
 
-async fn prepare(
+fn prepare(
     conn: *mut sqlite3,
     query: &mut Bytes,
     persistent: bool,

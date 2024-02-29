@@ -106,15 +106,15 @@ pub static CREATE_DB_WAL: AtomicBool = AtomicBool::new(true);
 
 /// UNSTABLE: for use by `sqlite-macros-core` only.
 #[doc(hidden)]
-pub fn describe_blocking(query: &str, database_url: &str) -> Result<Describe<Sqlite>, Error> {
+pub async fn describe_blocking(query: &str, database_url: &str) -> Result<Describe<Sqlite>, Error> {
     let opts: SqliteConnectOptions = database_url.parse()?;
     let params = EstablishParams::from_options(&opts)?;
-    let mut conn = params.establish()?;
+    let mut conn = params.establish().await?;
 
     // Execute any ancillary `PRAGMA`s
-    connection::execute::iter(&mut conn, &opts.pragma_string(), None, false)?.finish()?;
+    connection::execute::iter(&mut conn, &opts.pragma_string(), None, false).await?.finish()?;
 
-    connection::describe::describe(&mut conn, query)
+    connection::describe::describe(&mut conn, query).await
 
     // SQLite database is closed immediately when `conn` is dropped
 }
