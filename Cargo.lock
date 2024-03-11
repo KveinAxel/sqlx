@@ -1975,7 +1975,8 @@ dependencies = [
 
 [[package]]
 name = "madsim"
-version = "0.2.24"
+version = "0.2.25"
+source = "git+https://github.com/madsim-rs/madsim.git?rev=40948825dd018182cda8f8733c1e3056a6113e07#40948825dd018182cda8f8733c1e3056a6113e07"
 dependencies = [
  "ahash 0.8.9",
  "async-channel 2.2.0",
@@ -2005,6 +2006,7 @@ dependencies = [
 [[package]]
 name = "madsim-macros"
 version = "0.2.12"
+source = "git+https://github.com/madsim-rs/madsim.git?rev=40948825dd018182cda8f8733c1e3056a6113e07#40948825dd018182cda8f8733c1e3056a6113e07"
 dependencies = [
  "darling 0.14.4",
  "proc-macro2",
@@ -2015,6 +2017,7 @@ dependencies = [
 [[package]]
 name = "madsim-tokio"
 version = "0.2.24"
+source = "git+https://github.com/madsim-rs/madsim.git?rev=40948825dd018182cda8f8733c1e3056a6113e07#40948825dd018182cda8f8733c1e3056a6113e07"
 dependencies = [
  "madsim",
  "spin 0.9.8",

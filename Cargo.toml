@@ -146,7 +146,8 @@ version = "1"
 [workspace.dependencies.tokio]
 # version = "0.2"
 package = "madsim-tokio"
-path = "../madsim/madsim-tokio"
+git = "https://github.com/madsim-rs/madsim.git"
+rev = "40948825dd018182cda8f8733c1e3056a6113e07"
 features = ["time", "net", "sync", "fs", "io-util", "rt", "macros", "rt-multi-thread"]
 default-features = false
 
