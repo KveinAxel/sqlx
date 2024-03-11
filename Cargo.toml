@@ -147,7 +147,7 @@ version = "1"
 # version = "0.2"
 package = "madsim-tokio"
 git = "https://github.com/madsim-rs/madsim.git"
-rev = "40948825dd018182cda8f8733c1e3056a6113e07"
+rev = "4094882"
 features = ["time", "net", "sync", "fs", "io-util", "rt", "macros", "rt-multi-thread"]
 default-features = false
 
@@ -165,7 +165,6 @@ time_ = { version = "0.3.2", package = "time" }
 futures = "0.3.19"
 env_logger = "0.9.0"
 async-std = { version = "1.10.0", features = ["attributes"] }
-tokio = { version = "1.15.0", features = ["full"] }
 dotenvy = "0.15.0"
 trybuild = "1.0.53"
 sqlx-test = { path = "./sqlx-test" }
