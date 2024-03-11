@@ -7,7 +7,7 @@ use std::task::{Context, Poll};
 use bytes::BufMut;
 use futures_core::ready;
 
-pub use buffered::{BufferedSocket, WriteBuffer};
+pub use buffered::BufferedSocket;
 
 use crate::io::ReadBuf;
 

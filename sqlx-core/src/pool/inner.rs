@@ -243,7 +243,7 @@ impl<DB: Database> PoolInner<DB> {
 
         let deadline = Instant::now() + self.options.acquire_timeout;
 
-        let res = crate::rt::timeout(
+        crate::rt::timeout(
             self.options.acquire_timeout,
             async {
                 loop {
@@ -286,8 +286,7 @@ impl<DB: Database> PoolInner<DB> {
             }
         )
             .await
-            .map_err(|_| Error::PoolTimedOut)?;
-        res
+            .map_err(|_| Error::PoolTimedOut)?
     }
 
     pub(super) async fn connect(

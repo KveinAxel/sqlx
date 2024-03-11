@@ -2,7 +2,6 @@ use std::borrow::Cow;
 use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::thread;
 
 use futures_intrusive::sync::{Mutex, MutexGuard};
 
@@ -134,16 +133,17 @@ impl ConnectionWorker {
                         persistent,
                         tx,
                     } => {
-                        let iter = match execute::iter(&mut conn, &query, arguments, persistent).await {
-                            Ok(iter) => iter,
-                            Err(e) => {
-                                tx.send(Err(e)).ok();
-                                continue;
-                            }
-                        };
+                        let iter =
+                            match execute::iter(&mut conn, &query, arguments, persistent).await {
+                                Ok(iter) => iter,
+                                Err(e) => {
+                                    tx.send_async(Err(e)).await.ok();
+                                    continue;
+                                }
+                            };
 
                         for res in iter {
-                            if tx.send(res).is_err() {
+                            if tx.send_async(res).await.is_err() {
                                 break;
                             }
                         }
@@ -187,7 +187,8 @@ impl ConnectionWorker {
 
                         let res = if depth > 0 {
                             conn.handle
-                                .exec(commit_ansi_transaction_sql(depth)).await
+                                .exec(commit_ansi_transaction_sql(depth))
+                                .await
                                 .map(|_| {
                                     conn.transaction_depth -= 1;
                                 })
@@ -213,7 +214,8 @@ impl ConnectionWorker {
 
                         let res = if depth > 0 {
                             conn.handle
-                                .exec(rollback_ansi_transaction_sql(depth)).await
+                                .exec(rollback_ansi_transaction_sql(depth))
+                                .await
                                 .map(|_| {
                                     conn.transaction_depth -= 1;
                                 })
@@ -240,7 +242,7 @@ impl ConnectionWorker {
                     }
                     Command::UnlockDb => {
                         drop(conn);
-                        conn = futures_executor::block_on(shared.conn.lock());
+                        conn = shared.conn.lock().await;
                     }
                     Command::Ping { tx } => {
                         tx.send(()).ok();
@@ -375,12 +377,13 @@ impl ConnectionWorker {
     pub(crate) fn shutdown(&mut self) -> impl Future<Output = Result<(), Error>> {
         let (tx, rx) = oneshot::channel();
 
-        let send_res = self
-            .command_tx
-            .send(Command::Shutdown { tx })
-            .map_err(|_| Error::WorkerCrashed);
-
+        let command_tx = self.command_tx.clone();
         async move {
+            let send_res = command_tx
+                .send_async(Command::Shutdown { tx })
+                .await
+                .map_err(|_| Error::WorkerCrashed);
+
             send_res?;
 
             // wait for the response
@@ -441,10 +444,6 @@ mod rendezvous_oneshot {
             let (ack_tx, ack_rx) = oneshot::channel();
             self.inner.send((value, ack_tx)).map_err(|_| Canceled)?;
             ack_rx.await
-        }
-
-        pub fn blocking_send(self, value: T) -> Result<(), Canceled> {
-            futures_executor::block_on(self.send(value))
         }
     }
 
